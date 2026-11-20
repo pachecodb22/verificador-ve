@@ -47,53 +47,80 @@ def _limpiar_texto_pdf(texto: str) -> str:
 
 def generar_pdf_verificacion(texto_original: str, autor: str, fecha: str, reporte: dict) -> bytes:
     pdf = FPDF()
+    pdf.set_margins(15, 15, 15)
     pdf.add_page()
     pdf.set_auto_page_break(auto=True, margin=15)
+    ancho_util = pdf.epw
 
-    pdf.set_font("Helvetica", "B", 16)
-    pdf.cell(0, 10, _limpiar_texto_pdf("FICHA DE VERIFICACION DE DISCURSO PUBLICO - VE"), ln=True)
+    pdf.set_font("Helvetica", "B", 15)
+    pdf.set_x(pdf.l_margin)
+    pdf.multi_cell(ancho_util, 8, _limpiar_texto_pdf("FICHA DE VERIFICACION DE DISCURSO PUBLICO - VE"))
+
     pdf.set_font("Helvetica", "", 9)
     pdf.set_text_color(100, 100, 100)
     fecha_emision = datetime.now().strftime("%d/%m/%Y %H:%M")
-    pdf.cell(0, 6, _limpiar_texto_pdf(f"Emitido el: {fecha_emision} | Estandar Metodologico: Contraste Documental"), ln=True)
+    pdf.set_x(pdf.l_margin)
+    pdf.multi_cell(ancho_util, 5, _limpiar_texto_pdf(f"Emitido el: {fecha_emision} | Estandar Metodologico: Contraste Documental"))
     pdf.ln(4)
 
     pdf.set_text_color(0, 0, 0)
     pdf.set_font("Helvetica", "B", 11)
-    pdf.cell(0, 7, _limpiar_texto_pdf("1. DECLARACION ANALIZADA"), ln=True)
+    pdf.set_x(pdf.l_margin)
+    pdf.multi_cell(ancho_util, 6, _limpiar_texto_pdf("1. DECLARACION ANALIZADA"))
+
     pdf.set_font("Helvetica", "I", 10)
-    pdf.multi_cell(0, 6, _limpiar_texto_pdf(f'"{texto_original}"'))
+    pdf.set_x(pdf.l_margin)
+    pdf.multi_cell(ancho_util, 6, _limpiar_texto_pdf(f'"{texto_original}"'))
+
     if autor or fecha:
         pdf.set_font("Helvetica", "", 9)
-        pdf.cell(0, 6, _limpiar_texto_pdf(f"Atribuida a: {autor or 'No especificado'} | Fecha declaracion: {fecha or 'No especificada'}"), ln=True)
+        pdf.set_x(pdf.l_margin)
+        pdf.multi_cell(ancho_util, 5, _limpiar_texto_pdf(f"Atribuida a: {autor or 'No especificado'} | Fecha declaracion: {fecha or 'No especificada'}"))
     pdf.ln(4)
 
     pdf.set_font("Helvetica", "B", 12)
     veredicto = reporte.get("veredicto_general", "Inverificable")
-    pdf.cell(0, 8, _limpiar_texto_pdf(f"2. VEREDICTO: {veredicto.upper()}"), ln=True)
+    pdf.set_x(pdf.l_margin)
+    pdf.multi_cell(ancho_util, 7, _limpiar_texto_pdf(f"2. VEREDICTO: {veredicto.upper()}"))
+
     pdf.set_font("Helvetica", "", 10)
-    pdf.multi_cell(0, 6, _limpiar_texto_pdf(reporte.get("resumen_ejecutivo", "")))
+    pdf.set_x(pdf.l_margin)
+    pdf.multi_cell(ancho_util, 6, _limpiar_texto_pdf(reporte.get("resumen_ejecutivo", "")))
     pdf.ln(4)
 
     pdf.set_font("Helvetica", "B", 11)
-    pdf.cell(0, 7, _limpiar_texto_pdf("3. DESGLOSE ANALITICO"), ln=True)
+    pdf.set_x(pdf.l_margin)
+    pdf.multi_cell(ancho_util, 6, _limpiar_texto_pdf("3. DESGLOSE ANALITICO"))
+
     for idx, item in enumerate(reporte.get("desglose_afirmaciones", []), 1):
         pdf.set_font("Helvetica", "B", 10)
-        pdf.multi_cell(0, 6, _limpiar_texto_pdf(f"{idx}. [{item['veredicto']}] {item['afirmacion']}"))
+        pdf.set_x(pdf.l_margin)
+        pdf.multi_cell(ancho_util, 6, _limpiar_texto_pdf(f"{idx}. [{item['veredicto']}] {item['afirmacion']}"))
+
         pdf.set_font("Helvetica", "", 9)
-        pdf.multi_cell(0, 5, _limpiar_texto_pdf(f"Analisis: {item['analisis_experto']}"))
+        pdf.set_x(pdf.l_margin)
+        pdf.multi_cell(ancho_util, 5, _limpiar_texto_pdf(f"Analisis: {item['analisis_experto']}"))
         pdf.ln(2)
 
     pdf.ln(2)
     pdf.set_font("Helvetica", "B", 11)
-    pdf.cell(0, 7, _limpiar_texto_pdf("4. FUENTES INDEPENDIENTES CONSULTADAS"), ln=True)
+    pdf.set_x(pdf.l_margin)
+    pdf.multi_cell(ancho_util, 6, _limpiar_texto_pdf("4. FUENTES INDEPENDIENTES CONSULTADAS"))
+
     pdf.set_font("Helvetica", "", 9)
     fuentes = reporte.get("fuentes_detalladas", [])
     if fuentes:
         for f in fuentes:
-            pdf.multi_cell(0, 5, _limpiar_texto_pdf(f"- {f['medio']}: {f['titulo']} ({f['url']})"))
+            pdf.set_x(pdf.l_margin)
+            pdf.multi_cell(ancho_util, 5, _limpiar_texto_pdf(f"- {f['medio']}: {f['titulo']}"), wrapmode="CHAR")
+            pdf.set_x(pdf.l_margin)
+            pdf.set_text_color(40, 80, 150)
+            pdf.multi_cell(ancho_util, 5, _limpiar_texto_pdf(f"  Enlace: {f['url']}"), wrapmode="CHAR")
+            pdf.set_text_color(0, 0, 0)
+            pdf.ln(1)
     else:
-        pdf.cell(0, 6, _limpiar_texto_pdf("No se hallaron registros directos en la lista blanca de medios."), ln=True)
+        pdf.set_x(pdf.l_margin)
+        pdf.multi_cell(ancho_util, 5, _limpiar_texto_pdf("No se hallaron registros directos en la lista blanca de medios."))
 
     return bytes(pdf.output())
 
@@ -130,7 +157,6 @@ if st.button("Verificar declaración", type="primary", use_container_width=True)
     if not texto_usuario.strip() or len(texto_usuario.strip()) < 12:
         st.warning("Por favor, ingresa una declaración o enlace válido.")
     else:
-        # Paso 0: Detectar si es un enlace de X/noticia o una red cerrada
         resultado_extraccion = procesar_entrada_usuario(texto_usuario)
 
         if not resultado_extraccion["exito"]:
