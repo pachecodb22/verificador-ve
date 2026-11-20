@@ -1,0 +1,162 @@
+import os
+import requests
+from typing import List, Dict
+from dotenv import load_dotenv
+
+try:
+    from ddgs import DDGS
+except ImportError:
+    from duckduckgo_search import DDGS
+
+load_dotenv()
+
+NIVEL_1_VERIFICADORES = [
+    "cazadoresdefakenews.info",
+    "cotejo.info",
+    "espaja.com",
+    "factcheck.afp.com",
+]
+
+NIVEL_2_INVESTIGACION = [
+    "armando.info",
+    "talcualdigital.com",
+    "elpitazo.net",
+    "runrun.es",
+    "cronica.uno",
+    "prodavinci.com",
+]
+
+NIVEL_3_OBSERVATORIOS_DATOS = [
+    "observatoriodefinanzas.com",
+    "bcv.org.ve",
+    "accesoalajusticia.org",
+    "provea.org",
+    "vesinfiltro.org",
+]
+
+NOMBRES_FUENTES = {
+    "cazadoresdefakenews.info": "Cazadores de Fake News",
+    "cotejo.info": "Cotejo.info",
+    "espaja.com": "EsPaja",
+    "factcheck.afp.com": "AFP Factual",
+    "armando.info": "Armando.info",
+    "talcualdigital.com": "TalCual",
+    "elpitazo.net": "El Pitazo",
+    "runrun.es": "Runrun.es",
+    "cronica.uno": "Crónica.Uno",
+    "prodavinci.com": "Prodavinci",
+    "observatoriodefinanzas.com": "Observatorio Venezolano de Finanzas",
+    "bcv.org.ve": "Banco Central de Venezuela (BCV)",
+    "accesoalajusticia.org": "Acceso a la Justicia",
+    "provea.org": "PROVEA",
+    "vesinfiltro.org": "VE sin Filtro",
+}
+
+
+def _identificar_nombre_medio(url: str) -> str:
+    for dominio, nombre in NOMBRES_FUENTES.items():
+        if dominio in url:
+            return nombre
+    return "Fuente externa"
+
+
+def _construir_filtro_dominios(dominios: List[str]) -> str:
+    return "(" + " OR ".join([f"site:{d}" for d in dominios]) + ")"
+
+
+def _buscar_serper(query_completa: str, num_resultados: int = 5) -> List[Dict]:
+    api_key = os.getenv("SERPER_API_KEY")
+    if not api_key:
+        raise ValueError("No se encontró SERPER_API_KEY en el archivo .env")
+
+    url = "https://google.serper.dev/search"
+    payload = {"q": query_completa, "gl": "ve", "hl": "es", "num": num_resultados}
+    headers = {"X-API-KEY": api_key, "Content-Type": "application/json"}
+
+    respuesta = requests.post(url, headers=headers, json=payload, timeout=10)
+    respuesta.raise_for_status()
+    datos = respuesta.json()
+
+    resultados = []
+    for item in datos.get("organic", []):
+        link = item.get("link", "")
+        resultados.append({
+            "titulo": item.get("title", ""),
+            "url": link,
+            "fragmento": item.get("snippet", ""),
+            "fecha": item.get("date", "Fecha no especificada"),
+            "medio": _identificar_nombre_medio(link),
+            "motor": "Serper (Google)",
+        })
+    return resultados
+
+
+def _buscar_duckduckgo(query_completa: str, num_resultados: int = 5) -> List[Dict]:
+    resultados = []
+    with DDGS() as ddgs:
+        busqueda = ddgs.text(query_completa, region="ve-es", max_results=num_resultados)
+        for item in busqueda:
+            link = item.get("href", "")
+            resultados.append({
+                "titulo": item.get("title", ""),
+                "url": link,
+                "fragmento": item.get("body", ""),
+                "fecha": "Fecha no especificada",
+                "medio": _identificar_nombre_medio(link),
+                "motor": "DuckDuckGo (Respaldo)",
+            })
+    return resultados
+
+
+def ejecutar_busqueda(query_completa: str, num_resultados: int = 5) -> List[Dict]:
+    try:
+        return _buscar_serper(query_completa, num_resultados)
+    except Exception as e:
+        print(f"[Aviso] Conmutando a DuckDuckGo por error en Serper: {e}")
+        try:
+            return _buscar_duckduckgo(query_completa, num_resultados)
+        except Exception as e_ddg:
+            print(f"[Error] Fallo también en DuckDuckGo: {e_ddg}")
+            return []
+
+
+def buscar_evidencia_escalonada(query_afirmacion: str) -> Dict:
+    evidencia_total = []
+    urls_vistas = set()
+
+    filtro_n1 = _construir_filtro_dominios(NIVEL_1_VERIFICADORES)
+    resultados_n1 = ejecutar_busqueda(f"{query_afirmacion} {filtro_n1}", num_resultados=4)
+
+    for r in resultados_n1:
+        if r["url"] not in urls_vistas:
+            r["nivel_fuente"] = "Nivel 1 - Verificador Certificado"
+            evidencia_total.append(r)
+            urls_vistas.add(r["url"])
+
+    if len(evidencia_total) < 3:
+        dominios_n2_n3 = NIVEL_2_INVESTIGACION + NIVEL_3_OBSERVATORIOS_DATOS
+        filtro_n2_n3 = _construir_filtro_dominios(dominios_n2_n3)
+        resultados_n2_n3 = ejecutar_busqueda(f"{query_afirmacion} {filtro_n2_n3}", num_resultados=5)
+
+        for r in resultados_n2_n3:
+            if r["url"] not in urls_vistas:
+                r["nivel_fuente"] = "Nivel 2/3 - Investigación y Datos"
+                evidencia_total.append(r)
+                urls_vistas.add(r["url"])
+
+    return {
+        "query_utilizada": query_afirmacion,
+        "total_fuentes": len(evidencia_total),
+        "evidencia": evidencia_total,
+    }
+
+
+if __name__ == "__main__":
+    prueba = "salario minimo pensiones Venezuela aumento decreto"
+    print(f"Buscando evidencia para: '{prueba}'...\n")
+    salida = buscar_evidencia_escalonada(prueba)
+    for idx, fuente in enumerate(salida["evidencia"], 1):
+        print(f"{idx}. [{fuente['medio']}] ({fuente['nivel_fuente']})")
+        print(f"   Título: {fuente['titulo']}")
+        print(f"   Extracto: {fuente['fragmento'][:140]}...")
+        print(f"   URL: {fuente['url']}\n")

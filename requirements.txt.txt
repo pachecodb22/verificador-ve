@@ -1,0 +1,7 @@
+streamlit
+requests
+ddgs
+python-dotenv
+google-genai
+pydantic
+fpdf2
