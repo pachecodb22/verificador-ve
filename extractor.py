@@ -1,215 +1,163 @@
-import streamlit as st
-from datetime import datetime
-from fpdf import FPDF
-from evaluador import verificar_declaracion
-from extractor import procesar_entrada_usuario
-
-# --- CONFIGURACIÓN DE PÁGINA (MOBILE-FIRST Y PÚBLICA) ---
-st.set_page_config(
-    page_title="Verificador VE | Chequeo del Discurso Público",
-    page_icon="🔍",
-    layout="centered",
-    initial_sidebar_state="collapsed",
-)
-
-# --- ESTILOS VISUALES PARA TARJETAS DE VEREDICTO ---
-COLORES_VEREDICTO = {
-    "Cierto": ("#1b5e20", "#e8f5e9", "✅"),
-    "Engañoso / Media verdad": ("#e65100", "#fff3e0", "⚠️"),
-    "Falso": ("#b71c1c", "#ffebee", "❌"),
-    "Inverificable": ("#37474f", "#eceff1", "❓"),
-    "Opinión / No verificable": ("#1a237e", "#e8eaf6", "💬"),
-}
-
-EJEMPLOS_RAPIDOS = {
-    "Rumor salarial ($500)": "Delcy Rodríguez anunció que el salario mínimo en Venezuela subirá a 500 dólares a partir del 1 de diciembre.",
-    "Cifra económica (OVF/BCV)": "La inflación acumulada en Venezuela durante el último trimestre superó el 150 % según reportes independientes.",
-    "Opinión política": "Venezuela tiene el potencial energético más importante de todo el hemisferio occidental para los próximos veinte años.",
-}
+import re
+import html
+import requests
+from typing import Dict
 
 
-# --- CACHÉ PARA PROTEGER CUOTAS EN WEB PÚBLICA ---
-@st.cache_data(ttl=3600, show_spinner=False)
-def ejecutar_verificacion_cacheada(texto: str, autor: str, fecha: str, contexto: str) -> dict:
-    return verificar_declaracion(texto=texto, autor=autor, fecha=fecha, contexto=contexto)
+def es_url(texto: str) -> bool:
+    """Detecta si la entrada del usuario es principalmente un enlace web."""
+    texto_limpio = texto.strip()
+    return bool(re.match(r"^https?://\S+$", texto_limpio))
 
 
-# --- GENERADOR DE FICHA TÉCNICA EN PDF (FPDF2) ---
-def _limpiar_texto_pdf(texto: str) -> str:
-    reemplazos = {
-        "—": "-", "–": "-", "“": '"', "”": '"', "‘": "'", "’": "'",
-        "…": "...", "•": "-", "€": "EUR",
+def _limpiar_html(raw_html: str) -> str:
+    """Elimina etiquetas HTML de respuestas oEmbed y decodifica entidades."""
+    sin_tags = re.sub(r"<[^>]+>", " ", raw_html)
+    limpio = html.unescape(sin_tags)
+    return re.sub(r"\s+", " ", limpio).strip()
+
+
+def _extraer_tuit(url: str) -> Dict:
+    """Extrae texto y autor de publicaciones públicas de X/Twitter sin API paga."""
+    match = re.search(r"(?:twitter\.com|x\.com)/([^/]+)/status/(\d+)", url)
+    if not match:
+        return {
+            "exito": False,
+            "mensaje_error": "El enlace de X/Twitter no parece apuntar a una publicación específica (status). Copia el enlace directo del tuit o pega el texto."
+        }
+
+    usuario, tweet_id = match.group(1), match.group(2)
+
+    try:
+        resp = requests.get(
+            f"https://api.fxtwitter.com/{usuario}/status/{tweet_id}",
+            headers={"User-Agent": "VerificadorVE/1.0"},
+            timeout=8,
+        )
+        if resp.status_code == 200:
+            datos = resp.json().get("tweet", {})
+            texto_tuit = datos.get("text", "").strip()
+            autor_nombre = datos.get("author", {}).get("name", usuario)
+            if texto_tuit:
+                return {
+                    "exito": True,
+                    "texto": texto_tuit,
+                    "autor": f"{autor_nombre} (@{usuario})",
+                    "plataforma": "X (Twitter)",
+                }
+    except Exception:
+        pass
+
+    try:
+        resp_oembed = requests.get(
+            "https://publish.twitter.com/oembed",
+            params={"url": url, "omit_script": "true"},
+            timeout=8,
+        )
+        if resp_oembed.status_code == 200:
+            data = resp_oembed.json()
+            texto_limpio = _limpiar_html(data.get("html", ""))
+            autor = data.get("author_name", usuario)
+            if texto_limpio:
+                return {
+                    "exito": True,
+                    "texto": texto_limpio,
+                    "autor": f"{autor} (@{usuario})",
+                    "plataforma": "X (Twitter)",
+                }
+    except Exception:
+        pass
+
+    return {
+        "exito": False,
+        "mensaje_error": "No se pudo leer este tuit (puede ser de una cuenta privada o haber sido eliminado). Por favor, copia y pega el texto directamente."
     }
-    for k, v in reemplazos.items():
-        texto = texto.replace(k, v)
-    return texto.encode("latin-1", "replace").decode("latin-1")
 
 
-def generar_pdf_verificacion(texto_original: str, autor: str, fecha: str, reporte: dict) -> bytes:
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_auto_page_break(auto=True, margin=15)
+def _extraer_articulo_web(url: str) -> Dict:
+    """Extrae título y descripción de portales de noticias o blogs mediante metadatos OpenGraph."""
+    try:
+        resp = requests.get(
+            url,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; VerificadorVE/1.0)"},
+            timeout=8,
+        )
+        resp.raise_for_status()
+        contenido = resp.text
 
-    pdf.set_font("Helvetica", "B", 16)
-    pdf.cell(0, 10, _limpiar_texto_pdf("FICHA DE VERIFICACION DE DISCURSO PUBLICO - VE"), ln=True)
-    pdf.set_font("Helvetica", "", 9)
-    pdf.set_text_color(100, 100, 100)
-    fecha_emision = datetime.now().strftime("%d/%m/%Y %H:%M")
-    pdf.cell(0, 6, _limpiar_texto_pdf(f"Emitido el: {fecha_emision} | Estandar Metodologico: Contraste Documental"), ln=True)
-    pdf.ln(4)
+        titulo_match = re.search(
+            r'<meta[^>]+property=["\']og:title["\'][^>]+content=["\']([^"\']+)["\']',
+            contenido,
+            re.IGNORECASE,
+        ) or re.search(r"<title[^>]*>([^<]+)</title>", contenido, re.IGNORECASE)
 
-    pdf.set_text_color(0, 0, 0)
-    pdf.set_font("Helvetica", "B", 11)
-    pdf.cell(0, 7, _limpiar_texto_pdf("1. DECLARACION ANALIZADA"), ln=True)
-    pdf.set_font("Helvetica", "I", 10)
-    pdf.multi_cell(0, 6, _limpiar_texto_pdf(f'"{texto_original}"'))
-    if autor or fecha:
-        pdf.set_font("Helvetica", "", 9)
-        pdf.cell(0, 6, _limpiar_texto_pdf(f"Atribuida a: {autor or 'No especificado'} | Fecha declaracion: {fecha or 'No especificada'}"), ln=True)
-    pdf.ln(4)
+        desc_match = re.search(
+            r'<meta[^>]+(?:property=["\']og:description["\']|name=["\']description["\'])[^>]+content=["\']([^"\']+)["\']',
+            contenido,
+            re.IGNORECASE,
+        )
 
-    pdf.set_font("Helvetica", "B", 12)
-    veredicto = reporte.get("veredicto_general", "Inverificable")
-    pdf.cell(0, 8, _limpiar_texto_pdf(f"2. VEREDICTO: {veredicto.upper()}"), ln=True)
-    pdf.set_font("Helvetica", "", 10)
-    pdf.multi_cell(0, 6, _limpiar_texto_pdf(reporte.get("resumen_ejecutivo", "")))
-    pdf.ln(4)
+        titulo = html.unescape(titulo_match.group(1)).strip() if titulo_match else ""
+        desc = html.unescape(desc_match.group(1)).strip() if desc_match else ""
 
-    pdf.set_font("Helvetica", "B", 11)
-    pdf.cell(0, 7, _limpiar_texto_pdf("3. DESGLOSE ANALITICO"), ln=True)
-    for idx, item in enumerate(reporte.get("desglose_afirmaciones", []), 1):
-        pdf.set_font("Helvetica", "B", 10)
-        pdf.multi_cell(0, 6, _limpiar_texto_pdf(f"{idx}. [{item['veredicto']}] {item['afirmacion']}"))
-        pdf.set_font("Helvetica", "", 9)
-        pdf.multi_cell(0, 5, _limpiar_texto_pdf(f"Analisis: {item['analisis_experto']}"))
-        pdf.ln(2)
+        texto_combinado = f"{titulo}. {desc}".strip(". ")
+        if len(texto_combinado) >= 20:
+            return {
+                "exito": True,
+                "texto": texto_combinado,
+                "autor": "",
+                "plataforma": "Artículo / Sitio Web",
+            }
+    except Exception:
+        pass
 
-    pdf.ln(2)
-    pdf.set_font("Helvetica", "B", 11)
-    pdf.cell(0, 7, _limpiar_texto_pdf("4. FUENTES INDEPENDIENTES CONSULTADAS"), ln=True)
-    pdf.set_font("Helvetica", "", 9)
-    fuentes = reporte.get("fuentes_detalladas", [])
-    if fuentes:
-        for f in fuentes:
-            pdf.multi_cell(0, 5, _limpiar_texto_pdf(f"- {f['medio']}: {f['titulo']} ({f['url']})"))
-    else:
-        pdf.cell(0, 6, _limpiar_texto_pdf("No se hallaron registros directos en la lista blanca de medios."), ln=True)
-
-    return bytes(pdf.output())
+    return {
+        "exito": False,
+        "mensaje_error": "El sitio web bloqueó la lectura automática del enlace. Copia el titular o párrafo que deseas verificar y pégalo aquí."
+    }
 
 
-# --- INTERFAZ DE USUARIO ---
-st.title("🔍 Verificador VE")
-st.caption("Contraste ciudadano y periodístico del discurso político venezolano basado en verificadores certificados y datos abiertos.")
+def procesar_entrada_usuario(entrada: str) -> Dict:
+    """
+    Evalúa si el usuario ingresó texto directo o una URL.
+    Si es URL, intenta extraer el contenido o devuelve un aviso claro según la plataforma.
+    """
+    entrada_limpia = entrada.strip()
+    if not es_url(entrada_limpia):
+        return {
+            "exito": True,
+            "es_enlace": False,
+            "texto": entrada_limpia,
+            "autor": "",
+            "plataforma": "Texto directo",
+        }
 
-if "texto_input" not in st.session_state:
-    st.session_state.texto_input = ""
+    url_lower = entrada_limpia.lower()
 
-st.markdown("**Prueba con un ejemplo rápido:**")
-cols_ej = st.columns(3)
-for idx, (etiqueta, frase) in enumerate(EJEMPLOS_RAPIDOS.items()):
-    if cols_ej[idx].button(etiqueta, use_container_width=True):
-        st.session_state.texto_input = frase
+    redes_cerradas = {
+        "instagram.com": "Instagram",
+        "tiktok.com": "TikTok",
+        "facebook.com": "Facebook",
+        "fb.watch": "Facebook",
+        "threads.net": "Threads",
+        "whatsapp.com": "WhatsApp",
+    }
+    for dominio, nombre_red in redes_cerradas.items():
+        if dominio in url_lower:
+            return {
+                "exito": False,
+                "es_enlace": True,
+                "mensaje_error": (
+                    f"Por restricciones técnicas de **{nombre_red}**, no es posible leer el contenido directamente desde el enlace. "
+                    f"Por favor, **copia el texto de la publicación o transcribe la frase** y pégala en el cuadro de arriba."
+                ),
+            }
 
-texto_usuario = st.text_area(
-    "Pega aquí la declaración, cadena de WhatsApp o enlace de X (Twitter) / noticia:",
-    value=st.session_state.texto_input,
-    height=130,
-    max_chars=1500,
-    placeholder="Ej: https://x.com/... o pega directamente la frase que quieres verificar...",
-)
+    if "x.com/" in url_lower or "twitter.com/" in url_lower:
+        res = _extraer_tuit(entrada_limpia)
+        res["es_enlace"] = True
+        return res
 
-with st.expander("⚙️ Opciones avanzadas (Modo Periodista / Investigador)"):
-    col1, col2 = st.columns(2)
-    autor_input = col1.text_input("Personaje o institución", placeholder="Ej: Delcy Rodríguez / BCV")
-    fecha_input = col2.text_input("Fecha de la declaración", placeholder="Ej: Noviembre 2026")
-    contexto_input = st.text_input("Contexto o medio donde circuló", placeholder="Ej: Cadena de WhatsApp / Rueda de prensa")
-    modo_experto = st.checkbox("Mostrar auditoría técnica completa en pantalla", value=False)
-
-if st.button("Verificar declaración", type="primary", use_container_width=True):
-    if not texto_usuario.strip() or len(texto_usuario.strip()) < 12:
-        st.warning("Por favor, ingresa una declaración o enlace válido.")
-    else:
-        # Paso 0: Detectar si es un enlace de X/noticia o una red cerrada
-        resultado_extraccion = procesar_entrada_usuario(texto_usuario)
-
-        if not resultado_extraccion["exito"]:
-            st.warning(resultado_extraccion["mensaje_error"])
-        else:
-            texto_a_verificar = resultado_extraccion["texto"]
-            autor_final = autor_input.strip() or resultado_extraccion.get("autor", "")
-            contexto_final = contexto_input.strip()
-
-            if resultado_extraccion.get("es_enlace"):
-                st.info(f"🔗 **Contenido extraído de {resultado_extraccion['plataforma']}:**\n\n*\"{texto_a_verificar}\"*")
-                if not contexto_final:
-                    contexto_final = f"Publicación extraída de {resultado_extraccion['plataforma']}"
-
-            with st.spinner("Consultando verificadores certificados, medios de investigación y datos oficiales..."):
-                try:
-                    reporte = ejecutar_verificacion_cacheada(
-                        texto_a_verificar,
-                        autor_final,
-                        fecha_input.strip(),
-                        contexto_final,
-                    )
-
-                    veredicto = reporte.get("veredicto_general", "Inverificable")
-                    color_texto, color_fondo, icono = COLORES_VEREDICTO.get(
-                        veredicto, ("#37474f", "#eceff1", "❓")
-                    )
-
-                    st.markdown(
-                        f"""
-                        <div style="background-color:{color_fondo}; border-left: 6px solid {color_texto}; padding: 18px; border-radius: 8px; margin-top: 15px; margin-bottom: 15px;">
-                            <h3 style="color:{color_texto}; margin:0 0 8px 0;">{icono} Veredicto: {veredicto}</h3>
-                            <p style="color:#1f2937; font-size:16px; margin:0;">{reporte.get('resumen_ejecutivo', '')}</p>
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
-
-                    st.subheader("Detalle del análisis")
-                    for item in reporte.get("desglose_afirmaciones", []):
-                        v_item = item["veredicto"]
-                        _, _, ic_item = COLORES_VEREDICTO.get(v_item, ("#37474f", "#eceff1", "❓"))
-                        with st.container(border=True):
-                            st.markdown(f"**{ic_item} {v_item}** — *\"{item['afirmacion']}\"*")
-                            st.write(item["explicacion_sencilla"])
-                            if modo_experto:
-                                st.info(f"**Análisis metodológico:** {item['analisis_experto']} (Confianza: {item['nivel_confianza']})")
-
-                    st.subheader("Fuentes independientes consultadas")
-                    fuentes = [
-                        f for f in reporte.get("fuentes_detalladas", [])
-                        if "/page/" not in f["url"] and "attachment_id" not in f["url"]
-                    ]
-                    if fuentes:
-                        for f in fuentes:
-                            st.markdown(
-                                f"- **{f['medio']}** ({f['nivel_fuente']}): [{f['titulo']}]({f['url']})  \n"
-                                f"  <small style='color:#6b7280;'>{f['fragmento']}</small>",
-                                unsafe_allow_html=True,
-                            )
-                    else:
-                        st.info("No se hallaron publicaciones previas sobre esta afirmación exacta en los medios auditados.")
-
-                    if modo_experto:
-                        with st.expander("🔎 Trazabilidad de búsqueda (Queries utilizadas)"):
-                            st.write(reporte.get("queries_busqueda", []))
-
-                    st.divider()
-                    pdf_bytes = generar_pdf_verificacion(texto_a_verificar, autor_final, fecha_input, reporte)
-                    st.download_button(
-                        label="📄 Descargar Ficha de Verificación (PDF)",
-                        data=pdf_bytes,
-                        file_name=f"verificacion_ve_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
-                        mime="application/pdf",
-                        use_container_width=True,
-                    )
-
-                except Exception as e:
-                    st.error(f"Ocurrió un inconveniente temporal al procesar la verificación: {e}")
-
-st.divider()
-st.caption("Nota metodológica: Esta herramienta cruza declaraciones públicas exclusivamente contra verificadores miembros de IFCN/LatamChequea, medios de investigación venezolanos y observatorios técnicos.")
+    res = _extraer_articulo_web(entrada_limpia)
+    res["es_enlace"] = True
+    return res
