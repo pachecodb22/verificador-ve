@@ -125,37 +125,99 @@ def generar_pdf_verificacion(texto_original: str, autor: str, fecha: str, report
     return bytes(pdf.output())
 
 
-# --- INTERFAZ DE USUARIO ---
+# --- ENCABEZADO DIDÁCTICO Y PROPÓSITO ---
 st.title("🔍 Verificador VE")
-st.caption("Contraste ciudadano y periodístico del discurso político venezolano basado en verificadores certificados y datos abiertos.")
+st.markdown(
+    "**¿Recibiste una cadena de WhatsApp, un tuit o una declaración política y dudas si es real?**  \n"
+    "Esta herramienta cruza afirmaciones públicas sobre Venezuela exclusivamente contra medios de verificación "
+    "certificados, prensa de investigación y observatorios técnicos."
+)
 
+# --- GUÍA VISUAL DE 3 PASOS ---
+col_p1, col_p2, col_p3 = st.columns(3)
+with col_p1:
+    st.markdown(
+        """
+        <div style="background-color:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:12px; height:100%;">
+            <div style="font-weight:700; color:#0f172a; margin-bottom:4px;">1️⃣ Pega el contenido</div>
+            <div style="font-size:13px; color:#475569;">Copia una frase, un rumor de WhatsApp o el enlace de una publicación en X (Twitter).</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+with col_p2:
+    st.markdown(
+        """
+        <div style="background-color:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:12px; height:100%;">
+            <div style="font-weight:700; color:#0f172a; margin-bottom:4px;">2️⃣ Contraste documental</div>
+            <div style="font-size:13px; color:#475569;">El sistema rastrea chequeos previos y datos oficiales en fuentes venezolanas auditadas.</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+with col_p3:
+    st.markdown(
+        """
+        <div style="background-color:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:12px; height:100%;">
+            <div style="font-weight:700; color:#0f172a; margin-bottom:4px;">3️⃣ Veredicto y PDF</div>
+            <div style="font-size:13px; color:#475569;">Recibe una calificación clara con enlaces verificables y descarga la ficha técnica.</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+st.write("")
+
+# --- GUÍA DE ETIQUETAS Y FUENTES (DIDÁCTICO Y COLAPSABLE) ---
+with st.expander("📘 ¿Cómo leer los veredictos y qué fuentes consultamos?"):
+    st.markdown(
+        """
+        **Significado de las etiquetas de calificación:**
+        - ✅ **Cierto:** La afirmación coincide con datos oficiales verificables y registros de medios independientes.
+        - ⚠️ **Engañoso / Media verdad:** Contiene un dato real, pero está sacado de contexto, desactualizado o exagerado.
+        - ❌ **Falso:** Existen pruebas documentales o desmentidos oficiales que contradicen directamente la afirmación.
+        - ❓ **Inverificable:** No hay registros públicos suficientes para confirmar ni desmentir el dato.
+        - 💬 **Opinión / No verificable:** Es un juicio de valor, promesa futura o postura política, no un hecho medible.
+
+        **Fuentes auditadas que consulta el motor:**
+        - **Verificadores certificados (IFCN / LatamChequea):** *Cotejo.info, EsPaja, Cazadores de Fake News, AFP Factual*.
+        - **Periodismo de investigación:** *Armando.info, TalCual, El Pitazo, Runrun.es, Crónica.Uno, Prodavinci*.
+        - **Observatorios y entes técnicos:** *Observatorio Venezolano de Finanzas (OVF), BCV, Acceso a la Justicia, PROVEA, VE sin Filtro*.
+        """
+    )
+
+st.divider()
+
+# --- ÁREA PRINCIPAL DE VERIFICACIÓN ---
 if "texto_input" not in st.session_state:
     st.session_state.texto_input = ""
 
-st.markdown("**Prueba con un ejemplo rápido:**")
+st.markdown("**¿No sabes qué probar? Haz clic en uno de estos ejemplos:**")
 cols_ej = st.columns(3)
 for idx, (etiqueta, frase) in enumerate(EJEMPLOS_RAPIDOS.items()):
     if cols_ej[idx].button(etiqueta, use_container_width=True):
         st.session_state.texto_input = frase
 
 texto_usuario = st.text_area(
-    "Pega aquí la declaración, cadena de WhatsApp o enlace de X (Twitter) / noticia:",
+    "Escribe o pega aquí lo que deseas verificar:",
     value=st.session_state.texto_input,
     height=130,
     max_chars=1500,
-    placeholder="Ej: https://x.com/... o pega directamente la frase que quieres verificar...",
+    placeholder="Ejemplo: Pega el texto de una cadena de WhatsApp, una cita de un funcionario o el enlace de un tuit (https://x.com/...)",
+    help="Acepta texto directo, enlaces públicos de X (Twitter) y enlaces de noticias. Para Instagram o TikTok, copia y pega el texto de la publicación.",
 )
 
-with st.expander("⚙️ Opciones avanzadas (Modo Periodista / Investigador)"):
+with st.expander("⚙️ Opciones avanzadas (Para periodistas, investigadores o estudiantes)"):
+    st.caption("Si conoces quién dijo la frase o cuándo circuló, añádelo aquí para afinar la búsqueda:")
     col1, col2 = st.columns(2)
     autor_input = col1.text_input("Personaje o institución", placeholder="Ej: Delcy Rodríguez / BCV")
-    fecha_input = col2.text_input("Fecha de la declaración", placeholder="Ej: Noviembre 2026")
-    contexto_input = st.text_input("Contexto o medio donde circuló", placeholder="Ej: Cadena de WhatsApp / Rueda de prensa")
-    modo_experto = st.checkbox("Mostrar auditoría técnica completa en pantalla", value=False)
+    fecha_input = col2.text_input("Fecha aproximada", placeholder="Ej: Noviembre 2026")
+    contexto_input = st.text_input("Medio o contexto donde circuló", placeholder="Ej: Cadena de WhatsApp / Rueda de prensa")
+    modo_experto = st.checkbox("Activar vista de auditoría técnica (muestra metodología y consultas exactas)", value=False)
 
-if st.button("Verificar declaración", type="primary", use_container_width=True):
+if st.button("🔍 Verificar declaración ahora", type="primary", use_container_width=True):
     if not texto_usuario.strip() or len(texto_usuario.strip()) < 12:
-        st.warning("Por favor, ingresa una declaración o enlace válido.")
+        st.warning("Por favor, escribe una afirmación completa o pega un enlace válido (mínimo 12 caracteres).")
     else:
         resultado_extraccion = procesar_entrada_usuario(texto_usuario)
 
@@ -221,7 +283,7 @@ if st.button("Verificar declaración", type="primary", use_container_width=True)
                         st.info("No se hallaron publicaciones previas sobre esta afirmación exacta en los medios auditados.")
 
                     if modo_experto:
-                        with st.expander("🔎 Trazabilidad de búsqueda (Queries utilizadas)"):
+                        with st.expander("🔎 Trazabilidad de búsqueda (Consultas enviadas al buscador)"):
                             st.write(reporte.get("queries_busqueda", []))
 
                     st.divider()
@@ -238,4 +300,4 @@ if st.button("Verificar declaración", type="primary", use_container_width=True)
                     st.error(f"Ocurrió un inconveniente temporal al procesar la verificación: {e}")
 
 st.divider()
-st.caption("Nota metodológica: Esta herramienta cruza declaraciones públicas exclusivamente contra verificadores miembros de IFCN/LatamChequea, medios de investigación venezolanos y observatorios técnicos.")
+st.caption("Nota metodológica: Herramienta de apoyo ciudadano y periodístico. Los resultados se generan cruzando declaraciones públicas con medios independientes y verificadores certificados en Venezuela.")
