@@ -34,6 +34,16 @@ NIVEL_3_OBSERVATORIOS_DATOS = [
     "vesinfiltro.org",
 ]
 
+NIVEL_4_INTERNACIONAL = [
+    "elpais.com",
+    "elmundo.es",
+    "infobae.com",
+    "lasillavacia.com",
+    "semana.com",
+    "reuters.com",
+    "apnews.com",
+]
+
 NOMBRES_FUENTES = {
     "cazadoresdefakenews.info": "Cazadores de Fake News",
     "cotejo.info": "Cotejo.info",
@@ -50,6 +60,13 @@ NOMBRES_FUENTES = {
     "accesoalajusticia.org": "Acceso a la Justicia",
     "provea.org": "PROVEA",
     "vesinfiltro.org": "VE sin Filtro",
+    "elpais.com": "El País",
+    "elmundo.es": "El Mundo",
+    "infobae.com": "Infobae",
+    "lasillavacia.com": "La Silla Vacía",
+    "semana.com": "Semana",
+    "reuters.com": "Reuters",
+    "apnews.com": "Associated Press (AP)",
 }
 
 
@@ -67,7 +84,7 @@ def _construir_filtro_dominios(dominios: List[str]) -> str:
 def _buscar_serper(query_completa: str, num_resultados: int = 5) -> List[Dict]:
     api_key = os.getenv("SERPER_API_KEY")
     if not api_key:
-        raise ValueError("No se encontró SERPER_API_KEY en el archivo .env")
+        raise ValueError("No se encontró SERPER_API_KEY en el entorno")
 
     url = "https://google.serper.dev/search"
     payload = {"q": query_completa, "gl": "ve", "hl": "es", "num": num_resultados}
@@ -124,23 +141,36 @@ def buscar_evidencia_escalonada(query_afirmacion: str) -> Dict:
     evidencia_total = []
     urls_vistas = set()
 
+    # Nivel 1: Verificadores certificados
     filtro_n1 = _construir_filtro_dominios(NIVEL_1_VERIFICADORES)
     resultados_n1 = ejecutar_busqueda(f"{query_afirmacion} {filtro_n1}", num_resultados=4)
 
     for r in resultados_n1:
-        if r["url"] not in urls_vistas:
+        if r["url"] not in urls_vistas and r["medio"] != "Fuente externa":
             r["nivel_fuente"] = "Nivel 1 - Verificador Certificado"
             evidencia_total.append(r)
             urls_vistas.add(r["url"])
 
+    # Nivel 2 y 3: Investigación y Observatorios venezolanos
     if len(evidencia_total) < 3:
         dominios_n2_n3 = NIVEL_2_INVESTIGACION + NIVEL_3_OBSERVATORIOS_DATOS
         filtro_n2_n3 = _construir_filtro_dominios(dominios_n2_n3)
         resultados_n2_n3 = ejecutar_busqueda(f"{query_afirmacion} {filtro_n2_n3}", num_resultados=5)
 
         for r in resultados_n2_n3:
-            if r["url"] not in urls_vistas:
-                r["nivel_fuente"] = "Nivel 2/3 - Investigación y Datos"
+            if r["url"] not in urls_vistas and r["medio"] != "Fuente externa":
+                r["nivel_fuente"] = "Nivel 2/3 - Investigación y Datos VE"
+                evidencia_total.append(r)
+                urls_vistas.add(r["url"])
+
+    # Nivel 4: Medios internacionales y regionales de referencia
+    if len(evidencia_total) < 4:
+        filtro_n4 = _construir_filtro_dominios(NIVEL_4_INTERNACIONAL)
+        resultados_n4 = ejecutar_busqueda(f"{query_afirmacion} {filtro_n4}", num_resultados=4)
+
+        for r in resultados_n4:
+            if r["url"] not in urls_vistas and r["medio"] != "Fuente externa":
+                r["nivel_fuente"] = "Nivel 4 - Prensa Internacional / Regional"
                 evidencia_total.append(r)
                 urls_vistas.add(r["url"])
 
@@ -149,14 +179,3 @@ def buscar_evidencia_escalonada(query_afirmacion: str) -> Dict:
         "total_fuentes": len(evidencia_total),
         "evidencia": evidencia_total,
     }
-
-
-if __name__ == "__main__":
-    prueba = "salario minimo pensiones Venezuela aumento decreto"
-    print(f"Buscando evidencia para: '{prueba}'...\n")
-    salida = buscar_evidencia_escalonada(prueba)
-    for idx, fuente in enumerate(salida["evidencia"], 1):
-        print(f"{idx}. [{fuente['medio']}] ({fuente['nivel_fuente']})")
-        print(f"   Título: {fuente['titulo']}")
-        print(f"   Extracto: {fuente['fragmento'][:140]}...")
-        print(f"   URL: {fuente['url']}\n")
