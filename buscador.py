@@ -18,6 +18,8 @@ NIVEL_1_VERIFICADORES = [
 ]
 
 NIVEL_2_INVESTIGACION = [
+    "accesoalajusticia.org",
+    "provea.org",
     "armando.info",
     "talcualdigital.com",
     "elpitazo.net",
@@ -29,8 +31,6 @@ NIVEL_2_INVESTIGACION = [
 NIVEL_3_OBSERVATORIOS_DATOS = [
     "observatoriodefinanzas.com",
     "bcv.org.ve",
-    "accesoalajusticia.org",
-    "provea.org",
     "vesinfiltro.org",
 ]
 
@@ -151,20 +151,20 @@ def buscar_evidencia_escalonada(query_afirmacion: str) -> Dict:
             evidencia_total.append(r)
             urls_vistas.add(r["url"])
 
-    # Nivel 2 y 3: Investigación y Observatorios venezolanos
-    if len(evidencia_total) < 3:
+    # Nivel 2 y 3: Investigación, Observatorios Jurídicos y Datos VE
+    if len(evidencia_total) < 4:
         dominios_n2_n3 = NIVEL_2_INVESTIGACION + NIVEL_3_OBSERVATORIOS_DATOS
         filtro_n2_n3 = _construir_filtro_dominios(dominios_n2_n3)
-        resultados_n2_n3 = ejecutar_busqueda(f"{query_afirmacion} {filtro_n2_n3}", num_resultados=5)
+        resultados_n2_n3 = ejecutar_busqueda(f"{query_afirmacion} {filtro_n2_n3}", num_resultados=6)
 
         for r in resultados_n2_n3:
             if r["url"] not in urls_vistas and r["medio"] != "Fuente externa":
-                r["nivel_fuente"] = "Nivel 2/3 - Investigación y Datos VE"
+                r["nivel_fuente"] = "Nivel 2/3 - Investigación, Jurídico y Datos VE"
                 evidencia_total.append(r)
                 urls_vistas.add(r["url"])
 
     # Nivel 4: Medios internacionales y regionales de referencia
-    if len(evidencia_total) < 4:
+    if len(evidencia_total) < 5:
         filtro_n4 = _construir_filtro_dominios(NIVEL_4_INTERNACIONAL)
         resultados_n4 = ejecutar_busqueda(f"{query_afirmacion} {filtro_n4}", num_resultados=4)
 
