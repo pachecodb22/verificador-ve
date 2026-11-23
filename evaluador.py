@@ -10,9 +10,11 @@ from buscador import buscar_evidencia_escalonada
 
 load_dotenv()
 
-# Cadena de modelos vigentes en orden de prioridad
+# Cadena de modelos de distintas familias para evitar saturación simultánea (503)
 MODELOS_FALLBACK = [
+    "gemini-2.5-flash",
     "gemini-3.8-flash",
+    "gemini-2.5-flash-lite",
     "gemini-3.5-flash-lite",
 ]
 
@@ -63,7 +65,7 @@ def _obtener_cliente() -> genai.Client:
 
 
 def _llamar_gemini_con_respaldo(cliente: genai.Client, prompt: str, schema_clase) -> dict:
-    """Ejecuta la consulta rotando entre los modelos vigentes si hay congestión (503/429)."""
+    """Ejecuta la consulta rotando entre modelos de distintas series si hay congestión (503/429)."""
     ultimo_error = None
 
     for modelo in MODELOS_FALLBACK:
@@ -83,14 +85,11 @@ def _llamar_gemini_con_respaldo(cliente: genai.Client, prompt: str, schema_clase
                 ultimo_error = e
                 error_str = str(e)
                 if "503" in error_str or "UNAVAILABLE" in error_str or "429" in error_str:
-                    time.sleep(1.5)
+                    time.sleep(1.2)
                     continue
-                # Si el modelo no está disponible (404), salta directo al siguiente modelo
                 break
 
-    raise RuntimeError(
-        f"No se pudo completar la consulta en los modelos disponibles. Detalle: {ultimo_error}"
-    )
+    raise RuntimeError(f"Saturación temporal en los servidores de IA: {ultimo_error}")
 
 
 def verificar_declaracion(
@@ -98,20 +97,23 @@ def verificar_declaracion(
 ) -> Dict:
     cliente = _obtener_cliente()
 
-    # 1. Extraer las consultas de búsqueda clave
-    prompt_queries = f"""
-    Eres un periodista investigador experto en fact-checking en Venezuela.
-    Analiza la siguiente declaración y extrae entre 1 y 3 consultas cortas de búsqueda para verificar si los hechos son ciertos o falsos.
-    No uses comillas excesivas ni operadores 'site:'.
+    # 1. Extraer las consultas de búsqueda clave (con respaldo directo si la IA está saturada)
+    try:
+        prompt_queries = f"""
+        Eres un periodista investigador experto en fact-checking en Venezuela.
+        Analiza la siguiente declaración y extrae entre 1 y 3 consultas cortas de búsqueda para verificar si los hechos son ciertos o falsos.
+        No uses comillas excesivas ni operadores 'site:'.
 
-    Declaración: "{texto}"
-    Autor atribuido: {autor or "No especificado"}
-    Fecha: {fecha or "No especificada"}
-    Contexto: {contexto or "No especificado"}
-    """
-
-    datos_queries = _llamar_gemini_con_respaldo(cliente, prompt_queries, ConsultasBusqueda)
-    queries = datos_queries.get("queries", [texto[:100]])[:3]
+        Declaración: "{texto}"
+        Autor atribuido: {autor or "No especificado"}
+        Fecha: {fecha or "No especificada"}
+        Contexto: {contexto or "No especificado"}
+        """
+        datos_queries = _llamar_gemini_con_respaldo(cliente, prompt_queries, ConsultasBusqueda)
+        queries = datos_queries.get("queries", [texto[:110]])[:3]
+    except Exception:
+        # Si Gemini da 503 en este paso, usamos el texto limpio como consulta directa en Serper
+        queries = [texto[:120].strip()]
 
     # 2. Buscar evidencia en la lista blanca jerárquica
     evidencia_consolidada = []
@@ -157,7 +159,27 @@ def verificar_declaracion(
     {bloque_evidencia}
     """
 
-    reporte = _llamar_gemini_con_respaldo(cliente, prompt_evaluacion, ReporteVerificacion)
+    try:
+        reporte = _llamar_gemini_con_respaldo(cliente, prompt_evaluacion, ReporteVerificacion)
+    except Exception:
+        # Contingencia limpia: si todos los modelos de IA están saturados (503), entrega las fuentes recuperadas sin romper la app
+        reporte = {
+            "veredicto_general": "Inverificable",
+            "resumen_ejecutivo": (
+                "Los servidores de análisis automático presentan alta demanda en este momento (error temporal 503). "
+                "Sin embargo, el motor recuperó las siguientes publicaciones relacionadas en medios auditados para tu consulta directa."
+            ),
+            "desglose_afirmaciones": [
+                {
+                    "afirmacion": texto,
+                    "veredicto": "Inverificable",
+                    "explicacion_sencilla": "Revisa los enlaces de medios independientes mostrados abajo o intenta nuevamente en un par de minutos para obtener el análisis automatizado.",
+                    "analisis_experto": "Contingencia activada por saturación temporal (HTTP 503) en la API de modelos generativos.",
+                    "nivel_confianza": "Bajo",
+                }
+            ],
+        }
+
     reporte["fuentes_detalladas"] = evidencia_consolidada
     reporte["queries_busqueda"] = queries
     return reporte
