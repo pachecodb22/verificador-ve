@@ -10,11 +10,10 @@ from buscador import buscar_evidencia_escalonada
 
 load_dotenv()
 
-# Cadena de modelos en orden de prioridad: si uno devuelve 503 (saturado), salta al siguiente
+# Cadena de modelos vigentes en orden de prioridad
 MODELOS_FALLBACK = [
-    "gemini-2.5-flash",
-    "gemini-2.5-flash-lite",
-    "gemini-2.0-flash",
+    "gemini-3.8-flash",
+    "gemini-3.5-flash-lite",
 ]
 
 
@@ -64,7 +63,7 @@ def _obtener_cliente() -> genai.Client:
 
 
 def _llamar_gemini_con_respaldo(cliente: genai.Client, prompt: str, schema_clase) -> dict:
-    """Intenta ejecutar la consulta en una lista de modelos para evitar caídas por error 503."""
+    """Ejecuta la consulta rotando entre los modelos vigentes si hay congestión (503/429)."""
     ultimo_error = None
 
     for modelo in MODELOS_FALLBACK:
@@ -83,13 +82,15 @@ def _llamar_gemini_con_respaldo(cliente: genai.Client, prompt: str, schema_clase
             except Exception as e:
                 ultimo_error = e
                 error_str = str(e)
-                # Si es sobrecarga temporal (503) o cuota (429), espera 1.5s y prueba respaldo
                 if "503" in error_str or "UNAVAILABLE" in error_str or "429" in error_str:
                     time.sleep(1.5)
                     continue
+                # Si el modelo no está disponible (404), salta directo al siguiente modelo
                 break
 
-    raise RuntimeError(f"Todos los modelos están temporalmente congestionados. Intenta de nuevo en unos segundos. Detalle: {ultimo_error}")
+    raise RuntimeError(
+        f"No se pudo completar la consulta en los modelos disponibles. Detalle: {ultimo_error}"
+    )
 
 
 def verificar_declaracion(
