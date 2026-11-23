@@ -1,8 +1,10 @@
+import urllib.parse
 import streamlit as st
 from datetime import datetime
 from fpdf import FPDF
 from evaluador import verificar_declaracion
 from extractor import procesar_entrada_usuario
+from buscador import obtener_noticias_del_dia
 
 # --- CONFIGURACIÓN DE PÁGINA (MOBILE-FIRST Y PÚBLICA) ---
 st.set_page_config(
@@ -28,10 +30,43 @@ EJEMPLOS_RAPIDOS = {
 }
 
 
-# --- CACHÉ PARA PROTEGER CUOTAS EN WEB PÚBLICA ---
+# --- CACHÉS PARA PROTEGER CUOTAS EN WEB PÚBLICA ---
 @st.cache_data(ttl=3600, show_spinner=False)
 def ejecutar_verificacion_cacheada(texto: str, autor: str, fecha: str, contexto: str) -> dict:
     return verificar_declaracion(texto=texto, autor=autor, fecha=fecha, contexto=contexto)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def cargar_timeline_cacheado() -> list:
+    return obtener_noticias_del_dia(max_noticias=8)
+
+
+# --- GENERADOR DE MENSAJE PARA WHATSAPP ---
+def generar_texto_whatsapp(texto_original: str, reporte: dict, fuentes: list) -> str:
+    veredicto = reporte.get("veredicto_general", "Inverificable")
+    _, _, icono = COLORES_VEREDICTO.get(veredicto, ("#37474f", "#eceff1", "❓"))
+    resumen = reporte.get("resumen_ejecutivo", "")
+
+    cita_corta = texto_original if len(texto_original) <= 180 else texto_original[:177] + "..."
+
+    lineas = [
+        "🔍 *VERIFICADOR VE — CHEQUEO DE DATOS*",
+        "",
+        f"📌 *Afirmación:* _{cita_corta}_",
+        "",
+        f"{icono} *Veredicto:* *{veredicto.upper()}*",
+        f"📝 *Resumen:* {resumen}",
+    ]
+
+    if fuentes:
+        lineas.append("")
+        lineas.append("📰 *Fuentes consultadas:*")
+        for f in fuentes[:3]:
+            lineas.append(f"• {f['medio']}: {f['url']}")
+
+    lineas.append("")
+    lineas.append("🔎 _Verificado con Verificador VE_")
+    return "\n".join(lineas)
 
 
 # --- GENERADOR DE FICHA TÉCNICA EN PDF (FPDF2) ---
@@ -130,7 +165,7 @@ st.title("🔍 Verificador VE")
 st.markdown(
     "**¿Recibiste una cadena de WhatsApp, un tuit o una declaración política y dudas si es real?**  \n"
     "Esta herramienta cruza afirmaciones públicas sobre Venezuela exclusivamente contra medios de verificación "
-    "certificados, prensa de investigación y observatorios técnicos."
+    "certificados, prensa de investigación, observatorios técnicos y prensa internacional de referencia."
 )
 
 # --- GUÍA VISUAL DE 3 PASOS ---
@@ -150,7 +185,7 @@ with col_p2:
         """
         <div style="background-color:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:12px; height:100%;">
             <div style="font-weight:700; color:#0f172a; margin-bottom:4px;">2️⃣ Contraste documental</div>
-            <div style="font-size:13px; color:#475569;">El sistema rastrea chequeos previos y datos oficiales en fuentes venezolanas auditadas.</div>
+            <div style="font-size:13px; color:#475569;">El sistema rastrea chequeos previos y datos oficiales en fuentes nacionales e internacionales.</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -159,8 +194,8 @@ with col_p3:
     st.markdown(
         """
         <div style="background-color:#f8fafc; border:1px solid #e2e8f0; border-radius:8px; padding:12px; height:100%;">
-            <div style="font-weight:700; color:#0f172a; margin-bottom:4px;">3️⃣ Veredicto y PDF</div>
-            <div style="font-size:13px; color:#475569;">Recibe una calificación clara con enlaces verificables y descarga la ficha técnica.</div>
+            <div style="font-weight:700; color:#0f172a; margin-bottom:4px;">3️⃣ Veredicto y difusión</div>
+            <div style="font-size:13px; color:#475569;">Recibe una calificación clara con fuentes, compártela en WhatsApp o descarga el PDF.</div>
         </div>
         """,
         unsafe_allow_html=True,
@@ -168,7 +203,7 @@ with col_p3:
 
 st.write("")
 
-# --- GUÍA DE ETIQUETAS Y FUENTES (DIDÁCTICO Y COLAPSABLE) ---
+# --- GUÍA DE ETIQUETAS Y FUENTES (ACTUALIZADA CON MEDIOS INTERNACIONALES) ---
 with st.expander("📘 ¿Cómo leer los veredictos y qué fuentes consultamos?"):
     st.markdown(
         """
@@ -179,10 +214,11 @@ with st.expander("📘 ¿Cómo leer los veredictos y qué fuentes consultamos?")
         - ❓ **Inverificable:** No hay registros públicos suficientes para confirmar ni desmentir el dato.
         - 💬 **Opinión / No verificable:** Es un juicio de valor, promesa futura o postura política, no un hecho medible.
 
-        **Fuentes auditadas que consulta el motor:**
-        - **Verificadores certificados (IFCN / LatamChequea):** *Cotejo.info, EsPaja, Cazadores de Fake News, AFP Factual*.
-        - **Periodismo de investigación:** *Armando.info, TalCual, El Pitazo, Runrun.es, Crónica.Uno, Prodavinci*.
-        - **Observatorios y entes técnicos:** *Observatorio Venezolano de Finanzas (OVF), BCV, Acceso a la Justicia, PROVEA, VE sin Filtro*.
+        **Jerarquía de fuentes auditadas que consulta el motor:**
+        - **Nivel 1 — Verificadores certificados (IFCN / LatamChequea):** *Cotejo.info, EsPaja, Cazadores de Fake News, AFP Factual*.
+        - **Nivel 2 — Periodismo de investigación venezolano:** *Armando.info, TalCual, El Pitazo, Runrun.es, Crónica.Uno, Prodavinci*.
+        - **Nivel 3 — Observatorios y entes técnicos:** *Observatorio Venezolano de Finanzas (OVF), BCV, Acceso a la Justicia, PROVEA, VE sin Filtro*.
+        - **Nivel 4 — Prensa internacional y regional de referencia:** *El País, El Mundo, Infobae, La Silla Vacía, Semana, Reuters, Associated Press (AP)*.
         """
     )
 
@@ -233,7 +269,7 @@ if st.button("🔍 Verificar declaración ahora", type="primary", use_container_
                 if not contexto_final:
                     contexto_final = f"Publicación extraída de {resultado_extraccion['plataforma']}"
 
-            with st.spinner("Consultando verificadores certificados, medios de investigación y datos oficiales..."):
+            with st.spinner("Consultando verificadores certificados, medios de investigación y prensa internacional..."):
                 try:
                     reporte = ejecutar_verificacion_cacheada(
                         texto_a_verificar,
@@ -286,18 +322,61 @@ if st.button("🔍 Verificar declaración ahora", type="primary", use_container_
                         with st.expander("🔎 Trazabilidad de búsqueda (Consultas enviadas al buscador)"):
                             st.write(reporte.get("queries_busqueda", []))
 
+                    # --- SECCIÓN DE DIFUSIÓN Y DESCARGA (WHATSAPP + PDF) ---
                     st.divider()
+                    st.subheader("📲 Compartir o guardar resultado")
+
+                    mensaje_wa = generar_texto_whatsapp(texto_a_verificar, reporte, fuentes)
+                    url_wa = f"https://api.whatsapp.com/send?text={urllib.parse.quote(mensaje_wa)}"
                     pdf_bytes = generar_pdf_verificacion(texto_a_verificar, autor_final, fecha_input, reporte)
-                    st.download_button(
-                        label="📄 Descargar Ficha de Verificación (PDF)",
-                        data=pdf_bytes,
-                        file_name=f"verificacion_ve_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
-                        mime="application/pdf",
-                        use_container_width=True,
-                    )
+
+                    col_acc1, col_acc2 = st.columns(2)
+                    with col_acc1:
+                        st.link_button(
+                            "📲 Enviar resumen por WhatsApp",
+                            url=url_wa,
+                            use_container_width=True,
+                        )
+                    with col_acc2:
+                        st.download_button(
+                            label="📄 Descargar Ficha Técnica (PDF)",
+                            data=pdf_bytes,
+                            file_name=f"verificacion_ve_{datetime.now().strftime('%Y%m%d_%H%M')}.pdf",
+                            mime="application/pdf",
+                            use_container_width=True,
+                        )
+
+                    with st.expander("📋 Copiar texto formateado para grupos o redes"):
+                        st.caption("Haz clic en el icono de copiar en la esquina superior derecha del recuadro:")
+                        st.code(mensaje_wa, language=None)
 
                 except Exception as e:
                     st.error(f"Ocurrió un inconveniente temporal al procesar la verificación: {e}")
 
+# --- TIMELINE DE NOTICIAS DEL DÍA (MEDIOS VENEZOLANOS) ---
 st.divider()
-st.caption("Nota metodológica: Herramienta de apoyo ciudadano y periodístico. Los resultados se generan cruzando declaraciones públicas con medios independientes y verificadores certificados en Venezuela.")
+st.subheader("🕒 Radar del día: Últimas publicaciones en medios venezolanos")
+st.caption("Actualización automática cada 30 minutos con titulares de verificadores y prensa independiente en Venezuela.")
+
+noticias_hoy = cargar_timeline_cacheado()
+if noticias_hoy:
+    for idx, notic in enumerate(noticias_hoy):
+        st.markdown(
+            f"""
+            <div style="border-left: 3px solid #2563eb; padding-left: 14px; margin-bottom: 14px;">
+                <div style="font-size: 12px; color: #2563eb; font-weight: 700;">
+                    {notic['medio']} &bull; <span style="color: #64748b; font-weight: 400;">{notic['fecha']}</span>
+                </div>
+                <div style="font-size: 15px; font-weight: 600; margin: 2px 0;">
+                    <a href="{notic['url']}" target="_blank" style="text-decoration: none; color: #0f172a;">{notic['titulo']}</a>
+                </div>
+                <div style="font-size: 13px; color: #475569;">{notic['fragmento']}</div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+else:
+    st.info("No hay titulares recientes disponibles en este momento. Intenta recargar en unos minutos.")
+
+st.divider()
+st.caption("Nota metodológica: Herramienta de apoyo ciudadano y periodístico. Los resultados se generan cruzando declaraciones públicas con medios independientes, verificadores certificados y prensa internacional de referencia.")
