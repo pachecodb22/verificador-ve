@@ -179,3 +179,52 @@ def buscar_evidencia_escalonada(query_afirmacion: str) -> Dict:
         "total_fuentes": len(evidencia_total),
         "evidencia": evidencia_total,
     }
+
+
+def obtener_noticias_del_dia(max_noticias: int = 8) -> List[Dict]:
+    """Recupera titulares recientes del día en medios venezolanos auditados y verificadores."""
+    dominios_noticias = NIVEL_1_VERIFICADORES[:3] + NIVEL_2_INVESTIGACION
+    filtro = _construir_filtro_dominios(dominios_noticias)
+    query = f"Venezuela hoy noticias {filtro}"
+
+    try:
+        api_key = os.getenv("SERPER_API_KEY")
+        if not api_key:
+            return []
+
+        url = "https://google.serper.dev/search"
+        payload = {
+            "q": query,
+            "gl": "ve",
+            "hl": "es",
+            "num": max_noticias,
+            "tbs": "qdr:d",
+        }
+        headers = {"X-API-KEY": api_key, "Content-Type": "application/json"}
+
+        respuesta = requests.post(url, headers=headers, json=payload, timeout=10)
+        respuesta.raise_for_status()
+        datos = respuesta.json()
+
+        noticias = []
+        urls_vistas = set()
+        for item in datos.get("organic", []):
+            link = item.get("link", "")
+            medio = _identificar_nombre_medio(link)
+            if (
+                link not in urls_vistas
+                and medio != "Fuente externa"
+                and "/page/" not in link
+                and "attachment_id" not in link
+            ):
+                noticias.append({
+                    "titulo": item.get("title", ""),
+                    "url": link,
+                    "fragmento": item.get("snippet", ""),
+                    "fecha": item.get("date", "Hoy"),
+                    "medio": medio,
+                })
+                urls_vistas.add(link)
+        return noticias
+    except Exception:
+        return []
