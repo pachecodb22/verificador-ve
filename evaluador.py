@@ -10,7 +10,6 @@ from buscador import buscar_evidencia_escalonada
 
 load_dotenv()
 
-# Cadena de modelos de distintas familias para evitar saturación simultánea (503)
 MODELOS_FALLBACK = [
     "gemini-2.5-flash",
     "gemini-3.8-flash",
@@ -32,7 +31,7 @@ class AfirmacionVerificada(BaseModel):
         description="Explicación clara y directa en lenguaje ciudadano (máximo 3 líneas)."
     )
     analisis_experto: str = Field(
-        description="Detalle técnico y contextual citando los medios o datos hallados."
+        description="Detalle técnico y contextual citando los medios, leyes o artículos constitucionales hallados."
     )
     nivel_confianza: Literal["Alto", "Medio", "Bajo"]
 
@@ -53,7 +52,7 @@ class ReporteVerificacion(BaseModel):
 
 class ConsultasBusqueda(BaseModel):
     queries: List[str] = Field(
-        description="Entre 1 y 3 consultas cortas de búsqueda en Google (sin operadores site:) para verificar los hechos."
+        description="Entre 1 y 3 consultas cortas de búsqueda en Google (sin operadores site:) para verificar los hechos y su marco legal."
     )
 
 
@@ -77,7 +76,7 @@ def _llamar_gemini_con_respaldo(cliente: genai.Client, prompt: str, schema_clase
                     config=types.GenerateContentConfig(
                         response_mime_type="application/json",
                         response_schema=schema_clase,
-                        temperature=0.1,
+                        temperature=0.05,
                     ),
                 )
                 return json.loads(respuesta.text)
@@ -97,11 +96,12 @@ def verificar_declaracion(
 ) -> Dict:
     cliente = _obtener_cliente()
 
-    # 1. Extraer las consultas de búsqueda clave (con respaldo directo si la IA está saturada)
+    # 1. Extraer las consultas de búsqueda clave incluyendo contraste jurídico/constitucional si aplica
     try:
         prompt_queries = f"""
         Eres un periodista investigador experto en fact-checking en Venezuela.
-        Analiza la siguiente declaración y extrae entre 1 y 3 consultas cortas de búsqueda para verificar si los hechos son ciertos o falsos.
+        Analiza la siguiente declaración y extrae entre 1 y 3 consultas cortas de búsqueda para verificar los hechos.
+        IMPORTANTE: Si la afirmación trata sobre cargos públicos, leyes, elecciones, TSJ, Asamblea Nacional o facultades del Estado venezolano, incluye al menos una consulta orientada al marco constitucional o análisis jurídico (por ejemplo: mencionando "Constitución", "inconstitucional", "Acceso a la Justicia" o "Cotejo").
         No uses comillas excesivas ni operadores 'site:'.
 
         Declaración: "{texto}"
@@ -112,7 +112,6 @@ def verificar_declaracion(
         datos_queries = _llamar_gemini_con_respaldo(cliente, prompt_queries, ConsultasBusqueda)
         queries = datos_queries.get("queries", [texto[:110]])[:3]
     except Exception:
-        # Si Gemini da 503 en este paso, usamos el texto limpio como consulta directa en Serper
         queries = [texto[:120].strip()]
 
     # 2. Buscar evidencia en la lista blanca jerárquica
@@ -126,7 +125,7 @@ def verificar_declaracion(
                 evidencia_consolidada.append(item)
                 urls_vistas.add(item["url"])
 
-    # 3. Evaluar la declaración exclusivamente contra la evidencia recuperada
+    # 3. Evaluar la declaración exclusivamente contra la evidencia recuperada + rigor jurídico
     bloque_evidencia = ""
     if evidencia_consolidada:
         for idx, ev in enumerate(evidencia_consolidada, 1):
@@ -140,14 +139,14 @@ def verificar_declaracion(
         bloque_evidencia = "NO SE ENCONTRARON RESULTADOS EN LAS FUENTES AUDITADAS."
 
     prompt_evaluacion = f"""
-    Eres un editor jefe de verificación de datos (fact-checking) bajo los estándares de la IFCN y LatamChequea.
-    Evalúa la siguiente declaración basándote ÚNICAMENTE en la evidencia documental proporcionada abajo.
+    Eres un editor jefe de verificación de datos (fact-checking) bajo los estándares de la IFCN y LatamChequea en Venezuela.
+    Evalúa la siguiente declaración basándote en la evidencia documental recuperada y en el ordenamiento constitucional venezolano vigente (Constitución de la República Bolivariana de Venezuela de 1999).
 
-    REGLAS ESTRICTAS:
-    - Si la declaración es una opinión, proyección futura o juicio de valor sin datos comprobables, clasifícala como "Opinión / No verificable".
-    - Si no hay evidencia documental suficiente para confirmar ni desmentir el hecho, clasifícala como "Inverificable". Nunca inventes datos.
-    - Si los verificadores o medios citados desmienten explícitamente el rumor o cifra, clasifícala como "Falso".
-    - Si mezcla un dato real con una exageración o falta de contexto, clasifícala como "Engañoso / Media verdad".
+    REGLAS ESTRICTAS DE VERIFICACIÓN:
+    1. DISTINCIÓN ENTRE LEGALIDAD Y HECHO CONSUMADO: Si una afirmación sostiene que algo "es legal", "está permitido" o que un funcionario "puede repetir en el cargo" cuando la Constitución de Venezuela de 1999 lo prohíbe expresamente (por ejemplo, el artículo 264 establece que los magistrados del TSJ son elegidos por un único período de 12 años sin posibilidad de reelección), DEBES clasificarla como "Falso" (si afirma que constitucionalmente pueden hacerlo) o "Engañoso / Media verdad" (si confunde una reelección ocurrida de facto o mediante reforma legal cuestionada con una facultad constitucional), explicando explícitamente qué dice la Constitución y lo documentado por observatorios jurídicos como Acceso a la Justicia.
+    2. NO CONFUNDIR TITULARES DE HECHOS CON LEGALIDAD: Que una noticia reporte que un funcionario repitió en un cargo no convierte en "Cierta" la afirmación de que la ley o la Constitución lo permitan.
+    3. OPINIONES: Si es un juicio de valor o proyección futura sin datos comprobables, clasifícala como "Opinión / No verificable".
+    4. INVERIFICABLE: Si no hay evidencia documental suficiente para confirmar ni desmentir el hecho, clasifícala como "Inverificable". Nunca inventes datos.
 
     DECLARACIÓN A EVALUAR:
     Texto: "{texto}"
@@ -162,7 +161,6 @@ def verificar_declaracion(
     try:
         reporte = _llamar_gemini_con_respaldo(cliente, prompt_evaluacion, ReporteVerificacion)
     except Exception:
-        # Contingencia limpia: si todos los modelos de IA están saturados (503), entrega las fuentes recuperadas sin romper la app
         reporte = {
             "veredicto_general": "Inverificable",
             "resumen_ejecutivo": (
