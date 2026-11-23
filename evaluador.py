@@ -1,44 +1,39 @@
 import os
-import re
 import json
-from typing import List, Literal
+import time
+from typing import List, Literal, Dict
 from pydantic import BaseModel, Field
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
-
 from buscador import buscar_evidencia_escalonada
 
 load_dotenv()
 
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
-
-# Modelos activos confirmados para tu cuenta (el lite responde ultra rápido y sin saturación)
-MODELOS_RESPALDO = [
-    "gemini-3.5-flash-lite",
-    "gemini-3.8-flash",
+# Cadena de modelos en orden de prioridad: si uno devuelve 503 (saturado), salta al siguiente
+MODELOS_FALLBACK = [
+    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",
+    "gemini-2.0-flash",
 ]
 
 
-class AfirmacionEvaluada(BaseModel):
-    afirmacion: str = Field(description="Frase factual exacta extraída del texto original.")
+class AfirmacionVerificada(BaseModel):
+    afirmacion: str = Field(description="La afirmación factual específica extraída del texto.")
     veredicto: Literal[
         "Cierto",
         "Engañoso / Media verdad",
         "Falso",
         "Inverificable",
-        "Opinión / No verificable"
-    ]
+        "Opinión / No verificable",
+    ] = Field(description="Clasificación estricta según el estándar metodológico.")
     explicacion_sencilla: str = Field(
-        description="Explicación clara en 2-3 líneas en lenguaje llano para cualquier ciudadano."
+        description="Explicación clara y directa en lenguaje ciudadano (máximo 3 líneas)."
     )
     analisis_experto: str = Field(
-        description="Análisis metodológico detallado citando cifras, fechas y contradicciones halladas."
+        description="Detalle técnico y contextual citando los medios o datos hallados."
     )
     nivel_confianza: Literal["Alto", "Medio", "Bajo"]
-    fuentes_respaldo: List[str] = Field(
-        description="Nombres de los medios usados para esta afirmación (ej. Cotejo.info, EsPaja)."
-    )
 
 
 class ReporteVerificacion(BaseModel):
@@ -47,124 +42,121 @@ class ReporteVerificacion(BaseModel):
         "Engañoso / Media verdad",
         "Falso",
         "Inverificable",
-        "Opinión / No verificable"
+        "Opinión / No verificable",
     ]
     resumen_ejecutivo: str = Field(
-        description="Conclusión directa y neutral en máximo 3 oraciones."
+        description="Síntesis ciudadana de 2 a 3 oraciones explicando por qué se asignó ese veredicto."
     )
-    queries_busqueda: List[str] = Field(
-        description="Consultas utilizadas para buscar evidencia."
-    )
-    desglose_afirmaciones: List[AfirmacionEvaluada]
+    desglose_afirmaciones: List[AfirmacionVerificada]
 
 
-def _extraer_palabras_clave(texto: str, autor: str = "") -> List[str]:
-    """Extrae palabras clave limpias al instante sin gastar cuota de LLM."""
-    stop_words = {
-        "el", "la", "los", "las", "un", "una", "unos", "unas", "de", "del",
-        "al", "a", "en", "con", "por", "para", "que", "se", "su", "sus",
-        "y", "o", "pero", "como", "mas", "más", "este", "esta", "esto",
-        "ese", "esa", "eso", "partir", "sobre", "entre", "hasta", "desde"
-    }
-    texto_limpio = re.sub(r"[^\w\sáéíóúñÁÉÍÓÚÑ0-9]", " ", texto)
-    palabras = [
-        p for p in texto_limpio.split()
-        if p.lower() not in stop_words and len(p) > 2
-    ]
-    query_principal = " ".join(palabras[:9])
-    queries = [query_principal]
-
-    if autor and autor.lower() not in query_principal.lower():
-        queries.append(f"{autor} {' '.join(palabras[:5])}")
-
-    return queries
-
-
-def _llamar_gemini_con_respaldo(prompt: str, schema) -> str:
-    """Ejecuta la evaluación usando gemini-3.5-flash-lite con respaldo a gemini-3.8-flash."""
-    config = types.GenerateContentConfig(
-        response_mime_type="application/json",
-        response_schema=schema,
-        temperature=0.1,
+class ConsultasBusqueda(BaseModel):
+    queries: List[str] = Field(
+        description="Entre 1 y 3 consultas cortas de búsqueda en Google (sin operadores site:) para verificar los hechos."
     )
 
+
+def _obtener_cliente() -> genai.Client:
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise ValueError("No se encontró GEMINI_API_KEY en el entorno o en Secrets.")
+    return genai.Client(api_key=api_key)
+
+
+def _llamar_gemini_con_respaldo(cliente: genai.Client, prompt: str, schema_clase) -> dict:
+    """Intenta ejecutar la consulta en una lista de modelos para evitar caídas por error 503."""
     ultimo_error = None
-    for modelo in MODELOS_RESPALDO:
-        try:
-            respuesta = client.models.generate_content(
-                model=modelo,
-                contents=prompt,
-                config=config,
-            )
-            return respuesta.text
-        except Exception as e:
-            print(f"[Aviso] {modelo} no disponible ({e}). Probando respaldo...")
-            ultimo_error = e
 
-    raise RuntimeError(f"Error al conectar con Gemini: {ultimo_error}")
+    for modelo in MODELOS_FALLBACK:
+        for intento in range(2):
+            try:
+                respuesta = cliente.models.generate_content(
+                    model=modelo,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        response_schema=schema_clase,
+                        temperature=0.1,
+                    ),
+                )
+                return json.loads(respuesta.text)
+            except Exception as e:
+                ultimo_error = e
+                error_str = str(e)
+                # Si es sobrecarga temporal (503) o cuota (429), espera 1.5s y prueba respaldo
+                if "503" in error_str or "UNAVAILABLE" in error_str or "429" in error_str:
+                    time.sleep(1.5)
+                    continue
+                break
+
+    raise RuntimeError(f"Todos los modelos están temporalmente congestionados. Intenta de nuevo en unos segundos. Detalle: {ultimo_error}")
 
 
-def verificar_declaracion(texto: str, autor: str = "", fecha: str = "", contexto: str = "") -> dict:
-    contexto_completo = f"Autor: {autor} | Fecha: {fecha} | Contexto: {contexto}".strip(" |")
-    queries = _extraer_palabras_clave(texto, autor)
+def verificar_declaracion(
+    texto: str, autor: str = "", fecha: str = "", contexto: str = ""
+) -> Dict:
+    cliente = _obtener_cliente()
 
-    evidencia_recopilada = []
+    # 1. Extraer las consultas de búsqueda clave
+    prompt_queries = f"""
+    Eres un periodista investigador experto en fact-checking en Venezuela.
+    Analiza la siguiente declaración y extrae entre 1 y 3 consultas cortas de búsqueda para verificar si los hechos son ciertos o falsos.
+    No uses comillas excesivas ni operadores 'site:'.
+
+    Declaración: "{texto}"
+    Autor atribuido: {autor or "No especificado"}
+    Fecha: {fecha or "No especificada"}
+    Contexto: {contexto or "No especificado"}
+    """
+
+    datos_queries = _llamar_gemini_con_respaldo(cliente, prompt_queries, ConsultasBusqueda)
+    queries = datos_queries.get("queries", [texto[:100]])[:3]
+
+    # 2. Buscar evidencia en la lista blanca jerárquica
+    evidencia_consolidada = []
     urls_vistas = set()
 
     for q in queries:
-        resultado_busqueda = buscar_evidencia_escalonada(q)
-        for item in resultado_busqueda.get("evidencia", []):
-            if "google.com/goto" not in item["url"] and item["medio"] != "Fuente externa":
-                if item["url"] not in urls_vistas:
-                    evidencia_recopilada.append(item)
-                    urls_vistas.add(item["url"])
+        res_busqueda = buscar_evidencia_escalonada(q)
+        for item in res_busqueda.get("evidencia", []):
+            if item["url"] not in urls_vistas:
+                evidencia_consolidada.append(item)
+                urls_vistas.add(item["url"])
 
+    # 3. Evaluar la declaración exclusivamente contra la evidencia recuperada
     bloque_evidencia = ""
-    for i, ev in enumerate(evidencia_recopilada, 1):
-        bloque_evidencia += (
-            f"[{i}] Medio: {ev['medio']} ({ev['nivel_fuente']})\n"
-            f"    Título: {ev['titulo']}\n"
-            f"    Fecha: {ev['fecha']}\n"
-            f"    Extracto: {ev['fragmento']}\n"
-            f"    URL: {ev['url']}\n\n"
-        )
-
-    if not bloque_evidencia:
-        bloque_evidencia = "No se encontraron registros en los medios auditados sobre esta afirmación exacta."
+    if evidencia_consolidada:
+        for idx, ev in enumerate(evidencia_consolidada, 1):
+            bloque_evidencia += (
+                f"[{idx}] Medio: {ev['medio']} ({ev['nivel_fuente']}) | Fecha: {ev['fecha']}\n"
+                f"Título: {ev['titulo']}\n"
+                f"Fragmento: {ev['fragmento']}\n"
+                f"URL: {ev['url']}\n\n"
+            )
+    else:
+        bloque_evidencia = "NO SE ENCONTRARON RESULTADOS EN LAS FUENTES AUDITADAS."
 
     prompt_evaluacion = f"""
-    Actúa como un verificador de datos (fact-checker) riguroso, imparcial y adherido a los estándares de la IFCN, especializado en Venezuela.
+    Eres un editor jefe de verificación de datos (fact-checking) bajo los estándares de la IFCN y LatamChequea.
+    Evalúa la siguiente declaración basándote ÚNICAMENTE en la evidencia documental proporcionada abajo.
 
-    DECLARACIÓN A VERIFICAR:
-    "{texto}"
+    REGLAS ESTRICTAS:
+    - Si la declaración es una opinión, proyección futura o juicio de valor sin datos comprobables, clasifícala como "Opinión / No verificable".
+    - Si no hay evidencia documental suficiente para confirmar ni desmentir el hecho, clasifícala como "Inverificable". Nunca inventes datos.
+    - Si los verificadores o medios citados desmienten explícitamente el rumor o cifra, clasifícala como "Falso".
+    - Si mezcla un dato real con una exageración o falta de contexto, clasifícala como "Engañoso / Media verdad".
 
-    METADATOS APORTADOS:
-    {contexto_completo if contexto_completo else "No especificados"}
+    DECLARACIÓN A EVALUAR:
+    Texto: "{texto}"
+    Autor: {autor or "No especificado"}
+    Fecha: {fecha or "No especificada"}
+    Contexto: {contexto or "No especificado"}
 
-    EVIDENCIA RECUPERADA DE MEDIOS INDEPENDIENTES Y OBSERVATORIOS:
+    EVIDENCIA DOCUMENTAL RECUPERADA:
     {bloque_evidencia}
-
-    REGLAS ESTRICTAS DE EVALUACIÓN:
-    1. Basa tu veredicto EXCLUSIVAMENTE en la evidencia recuperada y en hechos comprobables. Nunca inventes cifras ni enlaces.
-    2. Si la frase es un juicio de valor, promesa futura o postura ideológica sin datos factuales auditables, clasifícala como "Opinión / No verificable".
-    3. Si un dato es real pero se usa fuera de fecha o para llegar a una conclusión manipulada, usa "Engañoso / Media verdad".
-    4. Si no hay evidencia suficiente en las fuentes consultadas para confirmar o desmentir, usa "Inverificable" y explica qué dato oficial falta.
-    5. Mantén un tono neutral, periodístico y libre de adjetivos partidistas.
     """
 
-    texto_reporte = _llamar_gemini_con_respaldo(prompt_evaluacion, schema=ReporteVerificacion)
-    reporte = json.loads(texto_reporte)
+    reporte = _llamar_gemini_con_respaldo(cliente, prompt_evaluacion, ReporteVerificacion)
+    reporte["fuentes_detalladas"] = evidencia_consolidada
     reporte["queries_busqueda"] = queries
-    reporte["fuentes_detalladas"] = evidencia_recopilada
     return reporte
-
-
-if __name__ == "__main__":
-    frase_prueba = "Delcy Rodríguez anunció que el salario mínimo en Venezuela subirá a 500 dólares a partir del 1 de diciembre."
-    print(f"Analizando: '{frase_prueba}'...\n")
-    resultado = verificar_declaracion(frase_prueba)
-    print(f"VEREDICTO GENERAL: {resultado['veredicto_general']}")
-    print(f"RESUMEN: {resultado['resumen_ejecutivo']}\n")
-    print(f"FUENTES CONSULTADAS ({len(resultado['fuentes_detalladas'])}):")
-    for f in resultado["fuentes_detalladas"]:
-        print(f" - {f['medio']}: {f['titulo']} ({f['url']})")
